@@ -48,17 +48,28 @@ class Room extends EventEmitter
 
 		const bot = await Bot.create({ mediasoupRouter });
 
+		const activeSpeakerObserver = await mediasoupRouter
+			.createActiveSpeakerObserver({ interval: 500 });
+
 		return new Room(
 			{
 				roomId,
 				protooRoom,
 				mediasoupRouter,
 				audioLevelObserver,
-				bot
+				bot,
+				activeSpeakerObserver
 			});
 	}
 
-	constructor({ roomId, protooRoom, mediasoupRouter, audioLevelObserver, bot })
+	constructor({
+		roomId,
+		protooRoom,
+		mediasoupRouter,
+		audioLevelObserver,
+		bot,
+		activeSpeakerObserver
+	})
 	{
 		super();
 		this.setMaxListeners(Infinity);
@@ -101,12 +112,17 @@ class Room extends EventEmitter
 		// @type {Bot}
 		this._bot = bot;
 
+		this._activeSpeakerObserver = activeSpeakerObserver;
+
 		// Network throttled.
 		// @type {Boolean}
 		this._networkThrottled = false;
 
 		// Handle audioLevelObserver.
 		this._handleAudioLevelObserver();
+
+		// Handle activeSpeakerObserver.
+		this._handleActiveSpeakerObserver();
 
 		// For debugging.
 		global.audioLevelObserver = this._audioLevelObserver;
@@ -578,6 +594,9 @@ class Room extends EventEmitter
 		{
 			this._audioLevelObserver.addProducer({ producerId: producer.id })
 				.catch(() => {});
+
+			this._activeSpeakerObserver.addProducer({ producerId: producer.id })
+				.catch(() => {});
 		}
 
 		return { id: producer.id };
@@ -799,6 +818,22 @@ class Room extends EventEmitter
 			{
 				peer.notify('activeSpeaker', { peerId: null })
 					.catch(() => {});
+			}
+		});
+	}
+
+	_handleActiveSpeakerObserver()
+	{
+		this._activeSpeakerObserver.on('dominantspeaker', async ({ producer }) =>
+		{
+			logger.info('activeSpeakerObserver', producer.id);
+
+			for (const peer of this._getJoinedPeers())
+			{
+				if (peer.data.singleAudioConsumer)
+				{
+					await peer.data.singleAudioConsumer.changeProducer(producer.id);
+				}
 			}
 		});
 	}
@@ -1109,6 +1144,9 @@ class Room extends EventEmitter
 				if (producer.kind === 'audio')
 				{
 					this._audioLevelObserver.addProducer({ producerId: producer.id })
+						.catch(() => {});
+
+					this._activeSpeakerObserver.addProducer({ producerId: producer.id })
 						.catch(() => {});
 				}
 
