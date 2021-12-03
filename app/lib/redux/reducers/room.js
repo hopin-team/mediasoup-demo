@@ -3,6 +3,7 @@ const initialState =
 	url             : null,
 	state           : 'new', // new/connecting/connected/disconnected/closed,
 	activeSpeakerId : null,
+	singleAudioProducer: null,
 	statsPeerId     : null,
 	faceDetection   : false
 };
@@ -33,6 +34,13 @@ const room = (state = initialState, action) =>
 			const { peerId } = action.payload;
 
 			return { ...state, activeSpeakerId: peerId };
+		}
+
+		case 'SET_ROOM_SINGLE_AUDIO_PRODUCER':
+		{
+			const { producerId, peerId } = action.payload;
+
+			return { ...state, singleAudioProducer: producerId, singleAudioProducerPeerId: peerId };
 		}
 
 		case 'SET_ROOM_STATS_PEER_ID':

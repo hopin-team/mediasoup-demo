@@ -48,17 +48,28 @@ class Room extends EventEmitter
 
 		const bot = await Bot.create({ mediasoupRouter });
 
+		const activeSpeakerObserver = await mediasoupRouter
+			.createActiveSpeakerObserver({ interval: 500 });
+
 		return new Room(
 			{
 				roomId,
 				protooRoom,
 				mediasoupRouter,
 				audioLevelObserver,
-				bot
+				bot,
+				activeSpeakerObserver
 			});
 	}
 
-	constructor({ roomId, protooRoom, mediasoupRouter, audioLevelObserver, bot })
+	constructor({
+		roomId,
+		protooRoom,
+		mediasoupRouter,
+		audioLevelObserver,
+		bot,
+		activeSpeakerObserver
+	})
 	{
 		super();
 		this.setMaxListeners(Infinity);
@@ -101,6 +112,8 @@ class Room extends EventEmitter
 		// @type {Bot}
 		this._bot = bot;
 
+		this._activeSpeakerObserver = activeSpeakerObserver;
+
 		// Network throttled.
 		// @type {Boolean}
 		this._networkThrottled = false;
@@ -108,9 +121,14 @@ class Room extends EventEmitter
 		// Handle audioLevelObserver.
 		this._handleAudioLevelObserver();
 
+		// Handle activeSpeakerObserver.
+		this._handleActiveSpeakerObserver();
+
 		// For debugging.
 		global.audioLevelObserver = this._audioLevelObserver;
 		global.bot = this._bot;
+
+		this._audioConsumerCreated = false;
 	}
 
 	/**
@@ -217,7 +235,7 @@ class Room extends EventEmitter
 				});
 		});
 
-		peer.on('close', () =>
+		peer.on('close', async () =>
 		{
 			if (this._closed)
 				return;
@@ -227,8 +245,30 @@ class Room extends EventEmitter
 			// If the Peer was joined, notify all Peers.
 			if (peer.data.joined)
 			{
+				// Replace producerId.
+				let newProducer = null;
+				let newPeer = null;
 				for (const otherPeer of this._getJoinedPeers({ excludePeer: peer }))
 				{
+					newProducer = [ ...otherPeer.data.producers.values() ].find((p) => p.kind === 'audio');
+					if (newProducer) {
+						newPeer = otherPeer;
+						break;
+					}
+				}
+
+				for (const otherPeer of this._getJoinedPeers({ excludePeer: peer }))
+				{
+					if (otherPeer.data.singleAudioConsumer && newProducer)
+					{
+						await otherPeer.data.singleAudioConsumer.changeProducer(newProducer.id);
+
+						otherPeer.notify('singleAudioProducer', {
+							producerId: newProducer.id,
+							peerId: newPeer.id
+						}).catch(() => {});
+					}
+
 					otherPeer.notify('peerClosed', { peerId: peer.id })
 						.catch(() => {});
 				}
@@ -576,6 +616,9 @@ class Room extends EventEmitter
 		{
 			this._audioLevelObserver.addProducer({ producerId: producer.id })
 				.catch(() => {});
+
+			this._activeSpeakerObserver.addProducer({ producerId: producer.id })
+				.catch(() => {});
 		}
 
 		return { id: producer.id };
@@ -801,6 +844,37 @@ class Room extends EventEmitter
 		});
 	}
 
+	_handleActiveSpeakerObserver()
+	{
+		this._activeSpeakerObserver.on('dominantspeaker', async ({ producer }) =>
+		{
+			logger.info('activeSpeakerObserver', producer?.id);
+			let dominantspeakerPeer = null;
+
+			for (const peer of this._getJoinedPeers())
+			{
+				const peerProducer = [ ...peer.data.producers.values() ].find((p) => p.kind === 'audio');
+				if (peerProducer && producer && peerProducer.id === producer.id) {
+					dominantspeakerPeer = peer;
+					break;
+				}
+			}
+
+			for (const peer of this._getJoinedPeers())
+			{
+				if (peer.data.singleAudioConsumer && producer?.id)
+				{
+					await peer.data.singleAudioConsumer.changeProducer(producer.id);
+
+					peer.notify('singleAudioProducer', {
+						producerId: producer.id,
+						peerId: dominantspeakerPeer?.id
+					}).catch(() => {});
+				}
+			}
+		});
+	}
+
 	/**
 	 * Handle protoo requests from browsers.
 	 *
@@ -827,7 +901,8 @@ class Room extends EventEmitter
 					displayName,
 					device,
 					rtpCapabilities,
-					sctpCapabilities
+					sctpCapabilities,
+					singleAudioConsumerMode
 				} = request.data;
 
 				// Store client data into the protoo Peer data object.
@@ -836,6 +911,8 @@ class Room extends EventEmitter
 				peer.data.device = device;
 				peer.data.rtpCapabilities = rtpCapabilities;
 				peer.data.sctpCapabilities = sctpCapabilities;
+				peer.data.singleAudioConsumerMode = singleAudioConsumerMode;
+				peer.data.singleAudioConsumer = null;
 
 				// Tell the new Peer about already joined Peers.
 				// And also create Consumers for existing Producers.
@@ -1104,6 +1181,9 @@ class Room extends EventEmitter
 				if (producer.kind === 'audio')
 				{
 					this._audioLevelObserver.addProducer({ producerId: producer.id })
+						.catch(() => {});
+
+					this._activeSpeakerObserver.addProducer({ producerId: producer.id })
 						.catch(() => {});
 				}
 
@@ -1402,7 +1482,9 @@ class Room extends EventEmitter
 
 				const stats = await consumer.getStats();
 
-				accept(stats);
+				accept([
+					{ producerId: consumer.producerId }
+				].concat(stats));
 
 				break;
 			}
@@ -1508,6 +1590,45 @@ class Room extends EventEmitter
 				break;
 			}
 
+			case 'changeAudioPeer':
+			{
+				if (!peer.data.singleAudioConsumerMode)
+				{
+					throw new Error('Single audio consumer not activated');
+				}
+
+				const { peerId } = request.data;
+				const producerPeer = this._protooRoom.peers.find((p) => p.id === peerId);
+
+				// Ensure the Peer is joined.
+				if (!producerPeer.data.joined)
+					throw new Error('Peer not yet joined');
+
+				const producer = [ ...producerPeer.data.producers.values() ].find((p) => p.kind === 'audio');
+
+				if (peer.data.singleAudioConsumer)
+				{
+					await peer.data.singleAudioConsumer.changeProducer(producer.id);
+				}
+				else
+				{
+					await this._createConsumer({
+						consumerPeer : peer,
+						producerPeer,
+						producer
+					});
+				}
+
+				peer.notify('singleAudioProducer', {
+					producerId: producer.id,
+					peerId: producerPeer.id
+				}).catch(() => {});
+
+				accept();
+
+				break;
+			}
+
 			default:
 			{
 				logger.error('unknown request.method "%s"', request.method);
@@ -1570,6 +1691,30 @@ class Room extends EventEmitter
 			return;
 		}
 
+		if (producer.kind === 'audio' && consumerPeer.data.singleAudioConsumerMode)
+		{
+			if (consumerPeer.data.singleAudioConsumer)
+			{
+				logger.warn('_createConsumer() | Skipping audio consumer creation');
+
+				if (await consumerPeer.data.singleAudioConsumer !== true) {
+					await consumerPeer.data.singleAudioConsumer.changeProducer(producer.id);
+
+					consumerPeer.notify('singleAudioProducer', {
+						producerId: producer.id,
+						peerId: producerPeer.id
+					}).catch(() => {});
+				}
+
+				return;
+			}
+			else
+			{
+				// Set a value to avoid race conditions.
+				consumerPeer.data.singleAudioConsumer = true;
+			}
+		}
+
 		// Create the Consumer in paused mode.
 		let consumer;
 
@@ -1586,23 +1731,64 @@ class Room extends EventEmitter
 		{
 			logger.warn('_createConsumer() | transport.consume():%o', error);
 
+			if (producer.kind === 'audio' && consumerPeer.data.singleAudioConsumerMode)
+			{
+				consumerPeer.data.singleAudioConsumer = null;
+
+				consumerPeer.notify('singleAudioProducer', {
+					producerId: null,
+					peerId: null,
+				}).catch(() => {});
+			}
+
 			return;
 		}
 
 		// Store the Consumer into the protoo consumerPeer data Object.
 		consumerPeer.data.consumers.set(consumer.id, consumer);
 
+		// Set the consumer in single mode.
+		if (producer.kind === 'audio' && consumerPeer.data.singleAudioConsumerMode)
+		{
+			consumerPeer.data.singleAudioConsumer = consumer;
+
+			consumerPeer.notify('singleAudioProducer', {
+				producerId: producer.id,
+				peerId: producerPeer.id
+			}).catch(() => {});
+		}
+
 		// Set Consumer events.
 		consumer.on('transportclose', () =>
 		{
 			// Remove from its map.
 			consumerPeer.data.consumers.delete(consumer.id);
+
+			if (consumerPeer.data.singleAudioConsumer === consumer)
+			{
+				consumerPeer.data.singleAudioConsumer = null;
+
+				peer.notify('singleAudioProducer', {
+					producerId: null,
+					peerId: null
+				}).catch(() => {});
+			}
 		});
 
 		consumer.on('producerclose', () =>
 		{
 			// Remove from its map.
 			consumerPeer.data.consumers.delete(consumer.id);
+
+			if (consumerPeer.data.singleAudioConsumer === consumer)
+			{
+				consumerPeer.data.singleAudioConsumer = null;
+
+				peer.notify('singleAudioProducer', {
+					producerId: null,
+					peerId: null
+				}).catch(() => {});
+			}
 
 			consumerPeer.notify('consumerClosed', { consumerId: consumer.id })
 				.catch(() => {});
