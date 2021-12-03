@@ -778,6 +778,15 @@ export default class RoomClient
 					break;
 				}
 
+				case 'singleAudioProducer':
+					{
+						const { producerId, peerId } = notification.data;
+						store.dispatch(
+							stateActions.setRoomSingleAudioProducer(producerId, peerId));
+
+						break;
+					}
+
 				default:
 				{
 					logger.error(

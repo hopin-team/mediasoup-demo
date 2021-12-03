@@ -6,8 +6,28 @@ import * as appPropTypes from './appPropTypes';
 import { Appear } from './transitions';
 import Peer from './Peer';
 
-const Peers = ({ peers, activeSpeakerId }) =>
+const Peers = ({ peers, activeSpeakerId, singleAudioConsumer }) =>
 {
+	const audioRef = React.useRef();
+
+	React.useEffect(() => {
+		if (!singleAudioConsumer || !audioRef.current) {
+			return;
+		}
+		const stream = new MediaStream([singleAudioConsumer.track]);
+
+		audioRef.current.srcObject = stream;
+
+		audioRef.current.play()
+			.catch((error) => logger.warn('audioElem.play() failed:%o', error));
+
+		return () => {
+			if (audioRef.current) {
+				audioRef.current.srcObject = null;
+			}
+		}
+	}, [singleAudioConsumer, audioRef]);
+
 	return (
 		<div data-component='Peers'>
 			{
@@ -26,6 +46,15 @@ const Peers = ({ peers, activeSpeakerId }) =>
 					);
 				})
 			}
+
+			<audio
+				ref={audioRef}
+				autoPlay
+				playsInline
+				muted={false}
+				controls={false}
+			/>
+
 		</div>
 	);
 };
@@ -33,16 +62,37 @@ const Peers = ({ peers, activeSpeakerId }) =>
 Peers.propTypes =
 {
 	peers           : PropTypes.arrayOf(appPropTypes.Peer).isRequired,
-	activeSpeakerId : PropTypes.string
+	activeSpeakerId : PropTypes.string,
+	singleAudioProducer : PropTypes.string,
+	singleAudioProducerPeerId  : PropTypes.string,
+	singleAudioConsumer    : appPropTypes.Consumer
 };
 
 const mapStateToProps = (state) =>
 {
 	const peersArray = Object.values(state.peers);
 
+	let singleAudioConsumer = null;
+	if (state.room.singleAudioProducer) {
+		for (const peer of peersArray)
+		{
+			const consumersArray = peer.consumers
+				.map((consumerId) => state.consumers[consumerId]);
+			singleAudioConsumer =
+				consumersArray.find((consumer) => consumer.track.kind === 'audio');
+
+			if (singleAudioConsumer) {
+				break;
+			}
+		}
+	}
+
 	return {
 		peers           : peersArray,
-		activeSpeakerId : state.room.activeSpeakerId
+		activeSpeakerId : state.room.activeSpeakerId,
+		singleAudioProducer : state.room.singleAudioProducer,
+		singleAudioProducerPeerId : state.room.singleAudioProducerPeerId,
+		singleAudioConsumer
 	};
 };
 
@@ -55,7 +105,8 @@ const PeersContainer = connect(
 		{
 			return (
 				prev.peers === next.peers &&
-				prev.room.activeSpeakerId === next.room.activeSpeakerId
+				prev.room.activeSpeakerId === next.room.activeSpeakerId &&
+				prev.room.singleAudioProducer === next.room.singleAudioProducer
 			);
 		}
 	}

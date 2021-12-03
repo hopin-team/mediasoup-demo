@@ -15,7 +15,9 @@ const Peer = (props) =>
 		videoConsumer,
 		audioMuted,
 		faceDetection,
-		onSetStatsPeerId
+		onSetStatsPeerId,
+		singleAudioProducer,
+		singleAudioProducerPeerId
 	} = props;
 
 	const audioEnabled = (
@@ -87,10 +89,12 @@ const Peer = (props) =>
 					roomClient.requestConsumerKeyFrame(videoConsumer.id);
 				}}
 				onStatsClick={onSetStatsPeerId}
-				onAudioClick={() => 
+				onAudioClick={() =>
 				{
 					roomClient.changeAudioPeer(peer.id);
 				}}
+				singleAudioProducer={singleAudioProducer}
+				singleAudioProducerPeerId={singleAudioProducerPeerId}
 			/>
 		</div>
 	);
@@ -104,7 +108,9 @@ Peer.propTypes =
 	videoConsumer    : appPropTypes.Consumer,
 	audioMuted       : PropTypes.bool,
 	faceDetection    : PropTypes.bool.isRequired,
-	onSetStatsPeerId : PropTypes.func.isRequired
+	onSetStatsPeerId : PropTypes.func.isRequired,
+	singleAudioProducer : PropTypes.string,
+	singleAudioProducerPeerId : PropTypes.string
 };
 
 const mapStateToProps = (state, { id }) =>
@@ -117,13 +123,17 @@ const mapStateToProps = (state, { id }) =>
 		consumersArray.find((consumer) => consumer.track.kind === 'audio');
 	const videoConsumer =
 		consumersArray.find((consumer) => consumer.track.kind === 'video');
+	const singleAudioProducer = state.room.singleAudioProducer;
+	const singleAudioProducerPeerId = state.room.singleAudioProducerPeerId;
 
 	return {
 		peer,
-		audioConsumer,
+		// audioConsumer,
 		videoConsumer,
 		audioMuted    : me.audioMuted,
-		faceDetection : state.room.faceDetection
+		faceDetection : state.room.faceDetection,
+		singleAudioProducer,
+		singleAudioProducerPeerId
 	};
 };
 

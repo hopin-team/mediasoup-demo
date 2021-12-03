@@ -22,6 +22,14 @@ export const setRoomActiveSpeaker = (peerId) =>
 	};
 };
 
+export const setRoomSingleAudioProducer = (producerId, peerId) =>
+{
+	return {
+		type    : 'SET_ROOM_SINGLE_AUDIO_PRODUCER',
+		payload : { producerId, peerId }
+	};
+};
+
 export const setRoomStatsPeerId = (peerId) =>
 {
 	return {

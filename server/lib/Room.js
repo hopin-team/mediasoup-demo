@@ -235,7 +235,7 @@ class Room extends EventEmitter
 				});
 		});
 
-		peer.on('close', () =>
+		peer.on('close', async () =>
 		{
 			if (this._closed)
 				return;
@@ -245,8 +245,30 @@ class Room extends EventEmitter
 			// If the Peer was joined, notify all Peers.
 			if (peer.data.joined)
 			{
+				// Replace producerId.
+				let newProducer = null;
+				let newPeer = null;
 				for (const otherPeer of this._getJoinedPeers({ excludePeer: peer }))
 				{
+					newProducer = [ ...otherPeer.data.producers.values() ].find((p) => p.kind === 'audio');
+					if (newProducer) {
+						newPeer = otherPeer;
+						break;
+					}
+				}
+
+				for (const otherPeer of this._getJoinedPeers({ excludePeer: peer }))
+				{
+					if (otherPeer.data.singleAudioConsumer && newProducer)
+					{
+						await otherPeer.data.singleAudioConsumer.changeProducer(newProducer.id);
+
+						otherPeer.notify('singleAudioProducer', {
+							producerId: newProducer.id,
+							peerId: newPeer.id
+						}).catch(() => {});
+					}
+
 					otherPeer.notify('peerClosed', { peerId: peer.id })
 						.catch(() => {});
 				}
@@ -826,13 +848,28 @@ class Room extends EventEmitter
 	{
 		this._activeSpeakerObserver.on('dominantspeaker', async ({ producer }) =>
 		{
-			logger.info('activeSpeakerObserver', producer.id);
+			logger.info('activeSpeakerObserver', producer?.id);
+			let dominantspeakerPeer = null;
 
 			for (const peer of this._getJoinedPeers())
 			{
-				if (peer.data.singleAudioConsumer)
+				const peerProducer = [ ...peer.data.producers.values() ].find((p) => p.kind === 'audio');
+				if (peerProducer && producer && peerProducer.id === producer.id) {
+					dominantspeakerPeer = peer;
+					break;
+				}
+			}
+
+			for (const peer of this._getJoinedPeers())
+			{
+				if (peer.data.singleAudioConsumer && producer?.id)
 				{
 					await peer.data.singleAudioConsumer.changeProducer(producer.id);
+
+					peer.notify('singleAudioProducer', {
+						producerId: producer.id,
+						peerId: dominantspeakerPeer?.id
+					}).catch(() => {});
 				}
 			}
 		});
@@ -1582,6 +1619,11 @@ class Room extends EventEmitter
 					});
 				}
 
+				peer.notify('singleAudioProducer', {
+					producerId: producer.id,
+					peerId: producerPeer.id
+				}).catch(() => {});
+
 				accept();
 
 				break;
@@ -1653,6 +1695,17 @@ class Room extends EventEmitter
 		{
 			if (consumerPeer.data.singleAudioConsumer)
 			{
+				logger.warn('_createConsumer() | Skipping audio consumer creation');
+
+				if (await consumerPeer.data.singleAudioConsumer !== true) {
+					await consumerPeer.data.singleAudioConsumer.changeProducer(producer.id);
+
+					consumerPeer.notify('singleAudioProducer', {
+						producerId: producer.id,
+						peerId: producerPeer.id
+					}).catch(() => {});
+				}
+
 				return;
 			}
 			else
@@ -1681,6 +1734,11 @@ class Room extends EventEmitter
 			if (producer.kind === 'audio' && consumerPeer.data.singleAudioConsumerMode)
 			{
 				consumerPeer.data.singleAudioConsumer = null;
+
+				consumerPeer.notify('singleAudioProducer', {
+					producerId: null,
+					peerId: null,
+				}).catch(() => {});
 			}
 
 			return;
@@ -1693,6 +1751,11 @@ class Room extends EventEmitter
 		if (producer.kind === 'audio' && consumerPeer.data.singleAudioConsumerMode)
 		{
 			consumerPeer.data.singleAudioConsumer = consumer;
+
+			consumerPeer.notify('singleAudioProducer', {
+				producerId: producer.id,
+				peerId: producerPeer.id
+			}).catch(() => {});
 		}
 
 		// Set Consumer events.
@@ -1704,6 +1767,11 @@ class Room extends EventEmitter
 			if (consumerPeer.data.singleAudioConsumer === consumer)
 			{
 				consumerPeer.data.singleAudioConsumer = null;
+
+				peer.notify('singleAudioProducer', {
+					producerId: null,
+					peerId: null
+				}).catch(() => {});
 			}
 		});
 
@@ -1715,6 +1783,11 @@ class Room extends EventEmitter
 			if (consumerPeer.data.singleAudioConsumer === consumer)
 			{
 				consumerPeer.data.singleAudioConsumer = null;
+
+				peer.notify('singleAudioProducer', {
+					producerId: null,
+					peerId: null
+				}).catch(() => {});
 			}
 
 			consumerPeer.notify('consumerClosed', { consumerId: consumer.id })
